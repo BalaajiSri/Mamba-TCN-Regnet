@@ -37,9 +37,9 @@ fi
 COMMIT=$(git rev-parse --short HEAD)
 
 # ── Verify asset data exists ─────────────────────────────────────────────────
-for asset_csv in data/eth_daily_full.csv data/bnb_daily_full.csv; do
+for asset_csv in data/eth_daily_full.csv data/bnb_daily_full.csv data/sol_daily_full.csv; do
   if [[ ! -f "${asset_csv}" ]]; then
-    echo "ERROR: ${asset_csv} not found. Run: python scripts/fetch_asset_data.py"
+    echo "ERROR: ${asset_csv} not found. Run: python scripts/fetch_asset_data.py --all"
     exit 1
   fi
 done
@@ -143,6 +143,28 @@ read -ra gh_val_ids <<< "$(submit_group group_h \
   paper_hybrid_seq60_1d)"
 echo "Group H: ${#gh_val_ids[@]} jobs queued."
 
+# ── Group I: deep learning baselines (Transformer + LSTM) ────────────────────
+echo ""; echo "── Group I: Transformer + LSTM baselines ──"
+read -ra gi_val_ids <<< "$(submit_group group_i \
+  paper_transformer_1d \
+  paper_lstm_1d)"
+echo "Group I: ${#gi_val_ids[@]} jobs queued."
+
+# ── Group J: action threshold τ sensitivity ───────────────────────────────────
+echo ""; echo "── Group J: action threshold τ sensitivity ──"
+read -ra gj_val_ids <<< "$(submit_group group_j \
+  paper_hybrid_tau0001_1d \
+  paper_hybrid_tau005_1d \
+  paper_hybrid_tau010_1d \
+  paper_hybrid_tau020_1d)"
+echo "Group J: ${#gj_val_ids[@]} jobs queued."
+
+# ── Group G extended: add SOL ─────────────────────────────────────────────────
+echo ""; echo "── Group G-SOL: SOL generalisation ──"
+read -ra gsol_val_ids <<< "$(submit_group group_g \
+  paper_hybrid_sol_1d)"
+echo "Group G-SOL: ${#gsol_val_ids[@]} jobs queued."
+
 # ── Classical baselines (CPU only, no dependency) ─────────────────────────────
 echo ""; echo "── Classical baselines (ARIMA + MA, CPU) ──"
 classical_job_id=$(sbatch \
@@ -174,7 +196,7 @@ echo "Walk-forward: ${wf_job_id}"
 
 # ── Aggregate (after A+B+F+G+H) ──────────────────────────────────────────────
 echo ""; echo "── Aggregate paper metrics ──"
-all_val_ids=("${ga_val_ids[@]}" "${gb_val_ids[@]}" "${gf_val_ids[@]}" "${gg_val_ids[@]}" "${gh_val_ids[@]}")
+all_val_ids=("${ga_val_ids[@]}" "${gb_val_ids[@]}" "${gf_val_ids[@]}" "${gg_val_ids[@]}" "${gh_val_ids[@]}" "${gi_val_ids[@]}" "${gj_val_ids[@]}" "${gsol_val_ids[@]}")
 dep_str="$(IFS=:; echo "${all_val_ids[*]}")"
 agg_job_id=$(sbatch \
   --parsable \
@@ -189,7 +211,7 @@ agg_job_id=$(sbatch \
 echo "Aggregate: ${agg_job_id}"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
-total_gpu=$((${#ga_val_ids[@]} + ${#gb_val_ids[@]} + ${#gf_val_ids[@]} + ${#gg_val_ids[@]} + ${#gh_val_ids[@]}))
+total_gpu=$((${#ga_val_ids[@]} + ${#gb_val_ids[@]} + ${#gf_val_ids[@]} + ${#gg_val_ids[@]} + ${#gh_val_ids[@]} + ${#gi_val_ids[@]} + ${#gj_val_ids[@]} + ${#gsol_val_ids[@]}))
 echo ""
 echo "═══════════════════════════════════════════════════"
 echo "  All jobs submitted."

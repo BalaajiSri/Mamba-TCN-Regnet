@@ -1,0 +1,18 @@
+target: pl_modules.hybrid_ssm_trader_module.HybridSSMTraderModule
+params:
+  variant: "transformer"
+  num_features: 12
+  window_size: 30
+  hidden_dim: 64
+  attention_heads: 4
+  attention_dropout: 0.1
+  ffn_hidden_dim: 128
+  action_classes: 3
+  use_smoothing: false
+  target_mode: "return"
+  close_index: 4
+  action_threshold: 0.002
+  regression_loss_weight: 1.0
+  action_loss_weight: 0.05
+  loss: "rmse"
+normalize: false

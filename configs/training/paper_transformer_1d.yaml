@@ -1,9 +1,8 @@
 data_config: "btc_1d_paper"
-model: "HybridSSM-Trader_hybrid_paper"
+model: "transformer_paper"
 
-name: "HybridSSMTraderHybridSeq15Paper"
+name: "HybridSSMTraderTransformerPaper"
 max_epochs: 250
-window_size: 15
 use_volume: true
 additional_features: ["Return", "LogReturn", "HLRange", "OCChange", "VolumeChange", "RollingVolatility_7"]
 

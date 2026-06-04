@@ -1,7 +1,7 @@
-data_config: "bnb_1d_paper"
-model: "HybridSSM-Trader_hybrid_paper"
+data_config: "btc_1d_paper"
+model: "lstm_paper"
 
-name: "HybridSSMTraderHybridBNBPaper"
+name: "HybridSSMTraderLstmPaper"
 max_epochs: 250
 use_volume: true
 additional_features: ["Return", "LogReturn", "HLRange", "OCChange", "VolumeChange", "RollingVolatility_7"]

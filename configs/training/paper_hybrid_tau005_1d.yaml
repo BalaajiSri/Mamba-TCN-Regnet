@@ -1,0 +1,16 @@
+data_config: "btc_1d_paper"
+model: "HybridSSM-Trader_hybrid_paper"
+
+name: "HybridSSMTraderHybridTau005Paper"
+max_epochs: 250
+use_volume: true
+additional_features: ["Return", "LogReturn", "HLRange", "OCChange", "VolumeChange", "RollingVolatility_7"]
+
+hyperparams:
+  optimizer: adamw
+  lr: 0.0005
+  weight_decay: 0.0001
+  lr_scheduler: cosine
+  lr_cosine_T_max: 100
+  lr_cosine_eta_min: 0.00001
+  action_threshold: 0.005
