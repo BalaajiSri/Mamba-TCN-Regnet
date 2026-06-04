@@ -22,6 +22,9 @@ class BaseModule(pl.LightningModule):
         optimizer='adam',
         mode='default',
         loss='rmse',
+        lr_scheduler: str = 'step',
+        lr_cosine_T_max: int = 100,
+        lr_cosine_eta_min: float = 1e-6,
     ):
         super().__init__()
 
@@ -36,8 +39,10 @@ class BaseModule(pl.LightningModule):
         self.mode = mode
         self.window_size = window_size
         self.loss = loss
+        self.lr_scheduler = lr_scheduler
+        self.lr_cosine_T_max = lr_cosine_T_max
+        self.lr_cosine_eta_min = lr_cosine_eta_min
 
-        # self.loss = lambda x, y: torch.sqrt(tmp(x, y))
         self.mse = nn.MSELoss()
         self.l1 = nn.L1Loss()
         self.mape = MAPE()
@@ -96,7 +101,6 @@ class BaseModule(pl.LightningModule):
         elif self.loss == 'mape':
             return mape
         
-    
     def validation_step(self, batch, batch_idx):
         x = batch['features']
         y = batch[self.y_key]
@@ -114,9 +118,7 @@ class BaseModule(pl.LightningModule):
         self.log("val/rmse", rmse.detach(), batch_size=self.batch_size, sync_dist=True, prog_bar=True)
         self.log("val/mape", mape.detach(), batch_size=self.batch_size, sync_dist=True, prog_bar=True)
         self.log("val/mae", l1.detach(), batch_size=self.batch_size, sync_dist=True, prog_bar=False)
-        return {
-            "val_loss": mse,
-        }
+        return {"val_loss": mse}
     
     def test_step(self, batch, batch_idx):
         x = batch['features']
@@ -135,13 +137,17 @@ class BaseModule(pl.LightningModule):
         self.log("test/rmse", rmse.detach(), batch_size=self.batch_size, sync_dist=True, prog_bar=True)
         self.log("test/mape", mape.detach(), batch_size=self.batch_size, sync_dist=True, prog_bar=True)
         self.log("test/mae", l1.detach(), batch_size=self.batch_size, sync_dist=True, prog_bar=False)
-        return {
-            "test_loss": mse,
-        }
+        return {"test_loss": mse}
     
     def configure_optimizers(self):
         if self.optimizer == 'adam':
             optim = torch.optim.Adam(
+                self.parameters(), lr=self.lr, weight_decay=self.weight_decay
+            )
+        elif self.optimizer == 'adamw':
+            # AdamW decouples weight decay from the gradient update — better
+            # for models with attention / LayerNorm (like this one).
+            optim = torch.optim.AdamW(
                 self.parameters(), lr=self.lr, weight_decay=self.weight_decay
             )
         elif self.optimizer == 'sgd':
@@ -150,10 +156,18 @@ class BaseModule(pl.LightningModule):
             )
         else:
             raise ValueError(f'Unimplemented optimizer {self.optimizer}')
-        scheduler = torch.optim.lr_scheduler.StepLR(optim, 
-                                                    self.lr_step_size, 
-                                                    self.lr_gamma
-                                                    )
+
+        if self.lr_scheduler == 'cosine':
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optim,
+                T_max=self.lr_cosine_T_max,
+                eta_min=self.lr_cosine_eta_min,
+            )
+        else:
+            scheduler = torch.optim.lr_scheduler.StepLR(
+                optim, self.lr_step_size, self.lr_gamma
+            )
+
         return [optim], [scheduler]
 
     def lr_scheduler_step(self, scheduler, *args, **kwargs):

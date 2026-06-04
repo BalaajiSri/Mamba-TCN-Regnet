@@ -10,20 +10,27 @@ from models.layers.tcn import TemporalConvNet
 
 
 class InputPreprocessor(nn.Module):
+    """Project raw features into the model's hidden dimension.
+
+    The previous version applied BatchNorm1d followed immediately by LayerNorm —
+    double normalisation that partially cancelled itself.  We now use a single
+    LayerNorm over the feature axis (i.e. per time-step position), which is the
+    standard choice for sequence models.
+    """
+
     def __init__(self, num_features: int, hidden_dim: int, dropout: float):
         super().__init__()
-        self.batch_norm = nn.BatchNorm1d(num_features)
-        self.layer_norm = nn.LayerNorm(num_features)
+        self.norm = nn.LayerNorm(num_features)
         self.proj = nn.Linear(num_features, hidden_dim)
         self.activation = nn.GELU()
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.batch_norm(x)
-        x = x.transpose(1, 2)
-        x = self.layer_norm(x)
+        # x: (B, F, T)  →  transpose to (B, T, F) for LayerNorm + Linear
+        x = x.transpose(1, 2)       # (B, T, F)
+        x = self.norm(x)             # normalise over F per position
         x = self.activation(self.proj(x))
-        return self.dropout(x)
+        return self.dropout(x)       # (B, T, H)
 
 
 class ParallelMambaEncoder(nn.Module):
@@ -157,21 +164,17 @@ class AlphaSeekBackbone(nn.Module):
         # Each ablation uses a simple mean of the remaining branches so that
         # capacity differences are isolated to the removed component only.
         if self.variant == "hybrid_no_tcn":
-            # Mamba + attention, no local TCN branch
             ctx = (long_context + global_context) * 0.5
             return self.output_norm(base + ctx + self.ffn(ctx))
         if self.variant == "hybrid_no_mamba":
-            # TCN + attention, no long-range Mamba branch
             ctx = (local_context + global_context) * 0.5
             return self.output_norm(base + ctx + self.ffn(ctx))
         if self.variant == "hybrid_no_attn":
-            # TCN + Mamba, no global attention branch
             ctx = (local_context + long_context) * 0.5
             return self.output_norm(base + ctx + self.ffn(ctx))
 
         # ── full hybrid with simple (unweighted) fusion ──────────────────────
         if self.variant == "hybrid_simple_fusion":
-            # All three branches, mean-pooled – no gated fusion
             ctx = (local_context + long_context + global_context) / 3.0
             return self.output_norm(base + ctx + self.ffn(ctx))
 
@@ -183,12 +186,14 @@ class AlphaSeekBackbone(nn.Module):
         base = self.preprocessor(x)
         local_context = self.tcn_branch(base)
         long_context = self.mamba_branch(base)
+
+        # Compute the normalised query/key/value once to avoid redundant work.
+        normed = self.attention_norm(base)
         global_context, attn_weights = self.attention(
-            self.attention_norm(base),
-            self.attention_norm(base),
-            self.attention_norm(base),
+            normed, normed, normed,
             need_weights=True,
         )
+
         sequence = self._compose_sequence(base, local_context, long_context, global_context)
         if self.smoother is not None:
             sequence = self.smoother(sequence, raw_inputs=x, close_index=self.close_index)
@@ -219,4 +224,3 @@ class AlphaSeekBackbone(nn.Module):
         if return_dict:
             return output
         return output["price"]
-
