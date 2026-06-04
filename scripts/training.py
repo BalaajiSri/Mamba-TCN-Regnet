@@ -253,7 +253,9 @@ if __name__ == "__main__":
         if args.wandb_tags:
             tags.extend([token.strip() for token in args.wandb_tags.split(",") if token.strip()])
         tags = [t for t in tags if t]
-        entity = args.wandb_entity or os.environ.get("WANDB_ENTITY")
+        _entity_raw = args.wandb_entity or os.environ.get("WANDB_ENTITY")
+        # Skip placeholder values left from template scripts
+        entity = _entity_raw if (_entity_raw and _entity_raw != "your-wandb-username") else None
         logger = pl.loggers.WandbLogger(
             project=args.wandb_project,
             name=name,
