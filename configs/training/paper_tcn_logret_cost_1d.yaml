@@ -1,7 +1,7 @@
 data_config: "btc_1d_paper"
-model: "AlphaSeek_tcn_logret_cost_paper"
+model: "HybridSSM-Trader_tcn_logret_cost_paper"
 
-name: "AlphaSeekTCNLogReturnCostPaper"
+name: "HybridSSM-TraderTCNLogReturnCostPaper"
 max_epochs: 250
 use_volume: true
 additional_features: ["Return", "LogReturn", "HLRange", "OCChange", "VolumeChange", "RollingVolatility_7"]

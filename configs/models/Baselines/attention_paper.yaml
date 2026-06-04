@@ -1,4 +1,4 @@
-target: pl_modules.alphaseek_module.HybridSSMTraderModule
+target: pl_modules.hybrid_ssm_trader_module.HybridSSMTraderModule
 params:
   variant: "attention"
   num_features: 12

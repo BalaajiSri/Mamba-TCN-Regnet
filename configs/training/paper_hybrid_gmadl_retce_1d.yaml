@@ -1,7 +1,7 @@
 data_config: "btc_1d_paper"
-model: "AlphaSeek_hybrid_gmadl_retce_paper"
+model: "HybridSSM-Trader_hybrid_gmadl_retce_paper"
 
-name: "AlphaSeekHybrid_gmadl_retce"
+name: "HybridSSM-TraderHybrid_gmadl_retce"
 max_epochs: 250
 use_volume: true
 additional_features: ["Return", "LogReturn", "HLRange", "OCChange", "VolumeChange", "RollingVolatility_7"]

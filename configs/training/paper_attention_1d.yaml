@@ -1,7 +1,7 @@
 data_config: "btc_1d_paper"
-model: "AlphaSeek_attention_paper"
+model: "HybridSSM-Trader_attention_paper"
 
-name: "AlphaSeekAttentionPaper"
+name: "HybridSSM-TraderAttentionPaper"
 max_epochs: 250
 use_volume: true
 additional_features: ["Return", "LogReturn", "HLRange", "OCChange", "VolumeChange", "RollingVolatility_7"]

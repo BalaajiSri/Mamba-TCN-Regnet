@@ -1,7 +1,7 @@
 data_config: "btc_1d_paper"
-model: "AlphaSeek_hybrid_simple_fusion_paper"
+model: "HybridSSM-Trader_hybrid_simple_fusion_paper"
 
-name: "AlphaSeekHybridSimpleFusion"
+name: "HybridSSM-TraderHybridSimpleFusion"
 max_epochs: 250
 use_volume: true
 additional_features: ["Return", "LogReturn", "HLRange", "OCChange", "VolumeChange", "RollingVolatility_7"]
