@@ -1,0 +1,16 @@
+torch
+torchvision
+torchaudio
+setuptools
+pyaml
+pyyaml
+lightning
+matplotlib
+seaborn
+pandas
+numpy
+einops
+tensorboard
+torchmetrics
+wandb>=0.16.0,<1.0
+mamba-ssm[causal-conv1d]

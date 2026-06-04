@@ -1,0 +1,27 @@
+target: pl_modules.hybrid_ssm_trader_module.HybridSSMTraderModule
+params:
+  variant: "hybrid_no_mamba"
+  num_features: 12
+  window_size: 30
+  hidden_dim: 64
+  tcn_channels: [64, 64]
+  tcn_kernel_size: 3
+  tcn_dropout: 0.1
+  num_mamba_branches: 4
+  mamba_d_state: 16
+  mamba_d_conv: 4
+  mamba_expand: 2
+  mamba_use_fast_path: false
+  attention_heads: 4
+  attention_dropout: 0.1
+  ffn_hidden_dim: 128
+  action_classes: 3
+  use_smoothing: true
+  mode: "default"
+  target_mode: "return"
+  close_index: 4
+  action_threshold: 0.002
+  regression_loss_weight: 1.0
+  action_loss_weight: 0.05
+  loss: "rmse"
+normalize: false

@@ -1,0 +1,12 @@
+runs/
+results/
+Predictions/
+__pycache__/
+*.pyc
+.DS_Store
+slurm-*.out
+wandb/
+checkpoints/
+data/*_*_*/
+.cursor/
+
