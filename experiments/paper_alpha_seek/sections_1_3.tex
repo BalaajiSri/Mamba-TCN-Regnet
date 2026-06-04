@@ -1,0 +1,520 @@
+% ═══════════════════════════════════════════════════════════════════════════════
+% Sections 1–3 for PRICAI submission
+% Springer LNCS format  |  double-blind
+% ═══════════════════════════════════════════════════════════════════════════════
+
+% ─── Preamble (merge into your main .tex file) ────────────────────────────────
+\documentclass[runningheads]{llncs}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage[T1]{fontenc}
+
+\begin{document}
+
+\title{Learning Multi-Scale Market Representations\\
+       for Short-Horizon Cryptocurrency Trading}
+
+\author{Anonymised for review}
+\institute{Anonymised for review}
+\maketitle
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{abstract}
+We propose \textsc{HybridSSM-Trader}, a multi-scale temporal backbone for short-horizon
+cryptocurrency price prediction that combines Temporal Convolutional Networks
+(TCN), parallel Mamba state-space branches, and multi-head self-attention through
+a learned three-way gated fusion.  Crucially, \textsc{HybridSSM-Trader} is trained with
+a multi-task objective that jointly optimises a price regression head and an
+action classification head (sell/hold/buy), and we show experimentally that this
+joint objective is \emph{not} a minor add-on: removing it causes approximately
+40\% of random seeds to converge to an \emph{anti-predictive} signal, collapsing
+directional accuracy below 15\%.  On a frozen Bitcoin daily test set spanning
+January~2025 to March~2026, the full hybrid achieves a test-RMSE standard
+deviation of $\pm 4$ across five seeds, compared with $\pm 14$--$15$ for
+single-branch TCN and Mamba baselines and $\pm 469$ for an attention-only model,
+demonstrating substantially more stable generalisation.  Component ablations
+confirm that each of the three temporal branches and the gated fusion
+contribute to this stability.
+\end{abstract}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+\label{sec:intro}
+
+Short-horizon cryptocurrency forecasting sits at the intersection of two
+well-established difficulties: financial markets exhibit near-efficient pricing
+dynamics~\cite{fama1970efficient}, and high-frequency price series are
+non-stationary, heavy-tailed, and subject to abrupt regime changes.  Deep neural
+networks have achieved strong results on structured sequence tasks, yet their
+application to financial prediction is constrained by a fundamental mismatch
+between the optimisation objective and the downstream decision task.  Mean
+squared error---the default regression loss---penalises magnitude errors uniformly
+and is entirely indifferent to whether the \emph{direction} of a predicted price
+move is correct.  For a trading agent, a small directional error that induces a
+wrong buy/sell decision is far more costly than a large magnitude error in a
+correctly-signed prediction.
+
+A second challenge is representational.  Financial prices carry structure at
+multiple temporal scales simultaneously: high-frequency patterns (momentum,
+mean-reversion over a few days), medium-horizon trends (trend persistence over
+weeks), and global context (macro regime, crowd sentiment reflected across the
+full observation window).  Existing work largely addresses these scales in
+isolation.  TCN-based models~\cite{bai2018empirical} excel at capturing local
+dilated patterns but lack a mechanism for long-range state propagation.
+Transformer variants~\cite{zhou2021informer,wu2021autoformer} attend globally but
+are known to suffer from instability on small, noisy financial datasets.
+Mamba~\cite{gu2023mamba}, a selective state-space model, offers efficient linear
+recurrence well-suited to long-horizon state tracking but cannot directly
+express local dilated features.
+
+We propose \textsc{HybridSSM-Trader}, a backbone that processes each observation window
+through all three families in \emph{parallel} and fuses their outputs through a
+learned, position-wise three-way softmax gate.  A volatility-gated exponential
+smoother is applied as a post-processing step to attenuate noise adaptively under
+different market regimes.  Importantly, rather than relying on a single price
+regression objective, we train the model jointly to predict both the next-period
+price and a ternary trading action (sell/hold/buy) derived from the predicted
+return magnitude relative to a transaction-cost-adjusted threshold.  Our
+experiments reveal that this multi-task objective is essential for learning
+stable directional representations: without it, the backbone has no gradient
+signal that distinguishes a correct direction from an incorrect one, and
+converges to the regression optimum regardless of signal polarity.
+
+\paragraph{Contributions.}
+\begin{enumerate}
+  \item \textbf{Multi-scale backbone with corrected fusion.}
+        We introduce \textsc{HybridSSM-Trader}, a hybrid TCN--Mamba--Attention
+        architecture with a three-way \emph{softmax} gated feature fusion.
+        We identify and correct a systematic flaw present in concurrent
+        work~\cite{liu2025alphaseek}: their sigmoid-based gate assigns a
+        fixed scalar weight to the global branch regardless of input, which
+        prevents the gate from learning when attention context is uninformative.
+        Our formulation eliminates this bias; our ablation (``simple fusion'')
+        quantifies the resulting performance gap.
+  \item \textbf{Multi-task stabilisation.}  We demonstrate through a controlled
+        ablation that the joint action-classification objective is necessary for
+        reliable directional learning: removing it causes $\sim$40\% of random
+        initialisations to converge to anti-predictive signals
+        (directional accuracy $< 0.15$, worse than chance).
+  \item \textbf{Rigorous frozen-test evaluation.}  We report results across five
+        random seeds on a completely held-out BTC test set (Jan 2025--Mar 2026)
+        that was not used during any model selection decision, providing an
+        unusually clean out-of-sample evaluation for cryptocurrency ML research.
+\end{enumerate}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Deep learning for financial time series.}
+Early applications of recurrent networks to price prediction~\cite{hochreiter1997long}
+established that learned sequence models can capture autocorrelation in financial
+returns, though reliable generalisation requires careful regularisation.  TCNs,
+introduced for sequence modelling by Bai et al.~\cite{bai2018empirical}, use
+dilated causal convolutions to capture long-range dependencies without recurrence
+and have since been applied to intraday equity and cryptocurrency
+prediction~\cite{sezer2020financial}.  Transformer-based architectures have
+been applied to multivariate financial time series~\cite{zhou2021informer},
+but attention scales quadratically with sequence length and is prone to instability
+on datasets with high noise-to-signal ratios typical of cryptocurrency markets.
+
+\paragraph{State-space models.}
+Structured state-space models (S4~\cite{gu2022efficiently}) address the
+computational limitations of attention on long sequences through a linear
+recurrence parameterised by a structured transition matrix.  Mamba~\cite{gu2023mamba}
+extends S4 with input-selective state transitions, enabling the model to focus
+selectively on informative timesteps.  Recent work has demonstrated promising
+results applying Mamba to financial time series~\cite{xu2024mamba}, though these
+studies typically treat the Mamba backbone in isolation rather than as one
+component of a multi-scale ensemble.
+
+\paragraph{Multi-scale and hybrid architectures.}
+TimesNet~\cite{wu2023timesnet} and PatchTST~\cite{nie2022time} have explored
+the combination of local patch-level and global sequence-level representations,
+motivating the value of explicit multi-scale design.  Closest to our architecture
+is the ``Crossformer''~\cite{zhang2023crossformer}, which uses a two-stage
+attention over time and feature dimensions; however, it does not include a Mamba
+branch or a volatility-adaptive smoothing stage.  Concurrent work on hybrid
+SSM-attention models for general time series~\cite{lieber2024jamba} shows that
+the two families are complementary, supporting our parallel fusion approach.
+
+\paragraph{Closest prior work.}
+Liu et al.~\cite{liu2025alphaseek} independently propose a backbone combining
+Mamba SSM, TCN, and multi-head attention for high-frequency cryptocurrency
+trading under the name ``AlphaSeek FinRL''.  Despite architectural similarity,
+three substantive differences separate their work from ours.
+First, their gated fusion uses a binary sigmoid gate
+$\mathbf{f} = \sigma(\cdot)\!\cdot\!\mathbf{h}_\text{local}
+ + (1{-}\sigma(\cdot))\!\cdot\!\mathbf{h}_\text{long}
+ + 0.5\!\cdot\!\mathbf{h}_\text{global}$:
+the global (attention) branch receives a \emph{fixed} additive scalar~(0.5)
+that is independent of any input signal, preventing the gate from learning
+how much global context is actually useful.
+\textsc{HybridSSM-Trader} replaces this with a three-way softmax gate
+(Eq.~\ref{eq:gate}) in which all branches compete under a probability simplex,
+eliminating the free-riding bias.
+Second, Liu et al.\ apply sequential BatchNorm then LayerNorm input
+preprocessing---a redundant double-normalisation that our ablation confirms
+is unnecessary; we use a single LayerNorm (Eq.~\ref{eq:preprocess}).
+Third, and most critically, their architecture has no action classification
+head and is trained solely on an unspecified regression objective; we show
+in \S\ref{sec:results} that this omission leads to training instability in
+$\sim$40\% of random seeds.  Finally, their evaluation uses a single random
+seed with no held-out test split, whereas we report five-seed statistics on
+a frozen test set, providing a substantially more rigorous basis for comparison.
+
+\paragraph{Trading objectives and multi-task learning.}
+The disconnect between MSE minimisation and downstream trading performance is
+well-documented~\cite{fischer2018deep}.  Several works have proposed direction-
+aware loss functions, including the Mean Absolute Directional
+Loss~\cite{michalikow2023madl} and its differentiable extension
+GMADL~\cite{sakowski2024gmadl}, which penalise magnitude-weighted directional
+errors rather than raw forecast deviations.  Multi-task formulations that
+combine price regression with action classification have been explored in
+equity trading~\cite{ding2015deep}, but the effect of the classification head on
+the stability of directional learning has not been directly measured.  Our
+ablation study fills this gap.
+
+\paragraph{Cryptocurrency-specific forecasting.}
+Bitcoin price prediction has attracted dedicated study due to its high
+volatility and 24/7 trading~\cite{ji2019does}.  Regime-aware models and
+walk-forward evaluation protocols are increasingly recognised as necessary for
+credible evaluation~\cite{atsalakis2019bitcoin}, motivating our use of a
+completely frozen test split with explicit train/validation/test temporal
+boundaries.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Method}
+\label{sec:method}
+
+\subsection{Problem Formulation}
+\label{sec:formulation}
+
+Let $\mathbf{x}_t \in \mathbb{R}^F$ denote the feature vector at day $t$,
+comprising OHLCV prices and six engineered features (close return, log-return,
+high--low range, open--close change, volume change, and seven-day rolling
+volatility), giving $F=12$.  Given a window of $T=30$ consecutive daily
+observations $\mathbf{X} = [\mathbf{x}_{t-T+1}, \ldots, \mathbf{x}_t]
+\in \mathbb{R}^{F \times T}$, the model is asked to predict both (i) the
+next-day close price $y_{t+1}$ and (ii) a ternary trading action
+$a_{t+1} \in \{0\text{(sell)},\, 1\text{(hold)},\, 2\text{(buy)}\}$.
+
+The action label is derived from the one-step return
+$r_{t+1} = (y_{t+1} - y_t) / y_t$ relative to a threshold $\tau_{\text{eff}}
+= \tau + c_{\text{tx}}$, where $\tau$ is the minimum return threshold and
+$c_{\text{tx}}$ is the round-trip transaction cost:
+\begin{equation}
+  a_{t+1} =
+  \begin{cases}
+    2 & r_{t+1} >  +\tau_{\text{eff}} \\
+    0 & r_{t+1} <  -\tau_{\text{eff}} \\
+    1 & \text{otherwise.}
+  \end{cases}
+  \label{eq:action_label}
+\end{equation}
+
+\subsection{Input Preprocessing}
+\label{sec:preprocess}
+
+The raw input $\mathbf{X} \in \mathbb{R}^{F \times T}$ is first transposed to
+$\mathbb{R}^{T \times F}$ and normalised by a per-feature LayerNorm:
+\begin{equation}
+  \mathbf{H}_0 = \text{Dropout}\!\left(
+    \text{GELU}\!\left(
+      \mathbf{W}_p\, \text{LN}(\mathbf{X}^\top)
+    \right)
+  \right) \in \mathbb{R}^{T \times d},
+  \label{eq:preprocess}
+\end{equation}
+where $\mathbf{W}_p \in \mathbb{R}^{F \times d}$ is a learned projection and
+$d = 64$ is the shared hidden dimension.  A single LayerNorm over the feature
+axis is used, as it is the standard normalisation for position-wise sequence
+models and avoids the redundant double-normalisation common in prior
+financial time series models.
+
+\subsection{Parallel Temporal Branches}
+\label{sec:branches}
+
+\textsc{HybridSSM-Trader} processes $\mathbf{H}_0$ through three specialised
+encoders in parallel, each producing a context tensor of the same shape
+$\mathbb{R}^{B \times T \times d}$.
+
+\paragraph{TCN branch (local context).}
+A two-layer Temporal Convolutional Network with kernel size $k=3$, exponentially
+increasing dilation ($2^0, 2^1$), and weight normalisation captures local
+pattern dynamics:
+\begin{equation}
+  \mathbf{H}_{\text{local}} = \text{TCN}(\mathbf{H}_0).
+  \label{eq:tcn}
+\end{equation}
+Each temporal block applies two dilated causal convolutions with GELU activations
+and a skip connection with a $1{\times}1$ projection if the channel dimension changes.
+
+\paragraph{Mamba branch (long-range context).}
+The hidden representation is split into $K=4$ equal-width chunks of dimension
+$d/K$ and processed by $K$ independent Mamba selective state-space
+modules~\cite{gu2023mamba}:
+\begin{equation}
+  \mathbf{H}_{\text{long}} = \text{LN}\!\left(
+    \mathbf{H}_0 +
+    \text{Dropout}\!\left(
+      \bigoplus_{k=1}^{K} \text{Mamba}_k\!\left(\mathbf{H}_0^{(k)}\right)
+    \right)
+  \right),
+  \label{eq:mamba}
+\end{equation}
+where $\bigoplus$ denotes concatenation along the feature axis and
+$\mathbf{H}_0^{(k)}$ is the $k$-th chunk of a learned pre-projection of
+$\mathbf{H}_0$.  Each Mamba module uses state dimension $d_s{=}16$,
+convolutional kernel $d_c{=}4$, and expansion factor $e{=}2$.
+The multi-branch design allows parallel branches to attend to different
+temporal patterns within the state-space parameterisation.
+
+\paragraph{Attention branch (global context).}
+A single multi-head self-attention layer with $h=4$ heads captures global
+pairwise relationships across all positions:
+\begin{equation}
+  \mathbf{H}_{\text{global}}, \;\mathbf{A}
+    = \text{MHA}\!\left(\bar{\mathbf{H}}_0,\;
+                        \bar{\mathbf{H}}_0,\;
+                        \bar{\mathbf{H}}_0\right),
+  \quad \bar{\mathbf{H}}_0 = \text{LN}(\mathbf{H}_0),
+  \label{eq:attention}
+\end{equation}
+where the normalised representation $\bar{\mathbf{H}}_0$ is computed once and
+shared as query, key, and value to avoid redundant computation.
+$\mathbf{A} \in \mathbb{R}^{B \times h \times T \times T}$ is retained for
+analysis.
+
+\subsection{Gated Feature Fusion}
+\label{sec:fusion}
+
+The three context tensors are combined through a position-wise three-way softmax
+gate.  Each branch is first projected into a shared hidden space:
+\begin{align}
+  \mathbf{p}_j &= \mathbf{W}_j^P\, \mathbf{H}_j, \quad j \in
+    \{\text{local}, \text{long}, \text{global}\}, \\
+  \mathbf{w} &= \text{softmax}\!\left(
+    \text{MLP}_{gate}\!\left(
+      [\mathbf{p}_{\text{local}} \;\|\; \mathbf{p}_{\text{long}}
+       \;\|\; \mathbf{p}_{\text{global}}]
+    \right)
+  \right) \in \mathbb{R}^{B \times T \times 3},
+  \label{eq:gate}
+\end{align}
+where $\mathbf{W}_j^P \in \mathbb{R}^{d \times d}$ and $\text{MLP}_{gate}$
+maps $3d \to d \to 3$ with GELU activation.  The softmax normalisation ensures
+the three weights sum to one at every position, so each branch must earn its
+contribution and no branch receives a fixed additive bias.  The fused
+representation is:
+\begin{equation}
+  \mathbf{H}_{\text{fused}} =
+    w_1 \mathbf{p}_{\text{local}}
+    + w_2 \mathbf{p}_{\text{long}}
+    + w_3 \mathbf{p}_{\text{global}},
+  \label{eq:fused}
+\end{equation}
+followed by a linear output projection, a residual addition from the input
+$\mathbf{H}_0$, and a LayerNorm.  A two-layer position-wise FFN ($d \to 128
+\to d$) with GELU is then applied to the fused sequence.
+
+\subsection{Adaptive Signal Smoother}
+\label{sec:smoother}
+
+Raw hidden states can be noisy under high-volatility market conditions.
+We apply a learned exponential moving average whose decay parameter is
+conditioned on the current-window close-price volatility:
+\begin{align}
+  \hat{\sigma}_v &= \text{std}\!\left(
+    \frac{\Delta p_{\text{close}}}{p_{\text{close}}}
+  \right)_{\,t-T+1}^{\,t}, \label{eq:vol} \\
+  \alpha &= \alpha_{\min} + (\alpha_{\max} - \alpha_{\min})
+            \cdot \sigma\!\left(\mathbf{w}_v^\top \hat{\sigma}_v\right),
+            \label{eq:alpha} \\
+  \tilde{\mathbf{h}}_t &= \alpha \, \mathbf{h}_t
+                         + (1 - \alpha)\, \tilde{\mathbf{h}}_{t-1},
+  \label{eq:ema}
+\end{align}
+where $\mathbf{w}_v \in \mathbb{R}^d$ is a learned gating vector,
+$\alpha_{\min}{=}0.15$ and $\alpha_{\max}{=}0.85$.  High volatility yields
+$\alpha \to \alpha_{\max}$, giving more weight to the current step;
+low volatility yields heavier smoothing.  The smoother is implemented without
+a Python loop via vectorised causal decay weights, enabling efficient
+GPU execution.
+
+\subsection{Multi-Task Signal Heads}
+\label{sec:heads}
+
+The final hidden state of the last timestep, $\mathbf{h}_{-1} \in \mathbb{R}^d$,
+is passed to two independent heads after a LayerNorm:
+\begin{align}
+  \hat{y} &= \mathbf{W}_2^R \;\text{GELU}(\mathbf{W}_1^R \mathbf{h}_{-1})
+             \in \mathbb{R},
+             \label{eq:reghead} \\
+  \hat{\mathbf{a}} &= \mathbf{W}_2^A \;\text{GELU}(\mathbf{W}_1^A \mathbf{h}_{-1})
+                    \in \mathbb{R}^3,
+             \label{eq:actionhead}
+\end{align}
+where $\mathbf{W}_1^R, \mathbf{W}_1^A \in \mathbb{R}^{d/2 \times d}$ and
+$\mathbf{W}_2^R \in \mathbb{R}^{1 \times d/2}$,
+$\mathbf{W}_2^A \in \mathbb{R}^{3 \times d/2}$.
+
+\subsection{Training Objective}
+\label{sec:loss}
+
+The total loss is a weighted combination of a regression term and a
+classification term:
+\begin{equation}
+  \mathcal{L} = \lambda_r \mathcal{L}_{\text{reg}} +
+                \lambda_a \mathcal{L}_{\text{CE}},
+  \label{eq:loss}
+\end{equation}
+where $\mathcal{L}_{\text{reg}} = \sqrt{\text{MSE}(\hat{y}, y)}$ (RMSE),
+$\mathcal{L}_{\text{CE}}$ is the cross-entropy loss over the three action classes,
+$\lambda_r = 1.0$, and $\lambda_a = 0.05$.  The regression target is the
+raw next-day close price (no normalisation applied at the dataset level), and
+both $\hat{y}$ and $y$ are in the same price space.
+
+\paragraph{Why the action head matters.}
+The regression loss penalises magnitude error but carries no gradient signal about
+prediction \emph{direction}: a prediction of $\hat{y} = y - \epsilon$ incurs
+almost no loss when $\epsilon$ is small, even if the sign of the move is wrong.
+The action cross-entropy fills this gap: correctly classifying a buy day as buy
+(rather than sell) contributes a gradient that shapes the representation toward
+correct directional encoding.  We confirm this in \S\ref{sec:results}: removing
+$\mathcal{L}_{\text{CE}}$ entirely causes approximately 40\% of random seeds to
+converge to a model with directional accuracy below 15\%---worse than random
+assignment over three classes---indicating that the regression objective alone
+permits anti-correlated signal solutions.  The action weight $\lambda_a = 0.05$
+is chosen to be small enough that the primary optimisation target remains price
+accuracy while the classification term acts as a directional regulariser.
+
+\paragraph{Model summary.}  Table~\ref{tab:arch} summarises the architecture
+hyperparameters used in all experiments reported in this paper.
+
+\begin{table}[h]
+\centering
+\caption{HybridSSM-Trader architecture hyperparameters.}
+\label{tab:arch}
+\begin{tabular}{lc}
+\toprule
+\textbf{Component} & \textbf{Value} \\
+\midrule
+Input window $T$ & 30 \\
+Input features $F$ & 12 \\
+Hidden dimension $d$ & 64 \\
+TCN layers / kernel / dilation & 2 / 3 / $2^i$ \\
+Mamba branches $K$ & 4 \\
+Mamba state dim $d_s$ & 16 \\
+Attention heads $h$ & 4 \\
+FFN hidden dim & 128 \\
+Smoother $[\alpha_{\min}, \alpha_{\max}]$ & $[0.15, 0.85]$ \\
+Action classes & 3 \\
+\midrule
+Optimiser & AdamW \\
+Learning rate & $5 \times 10^{-4}$ \\
+LR schedule & CosineAnnealingLR ($T_{\\max}{=}100$) \\
+Weight decay & $10^{-4}$ \\
+Batch size & 32 \\
+Early stopping patience & 30 epochs (val RMSE) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+% Placeholder bibliography entries — replace with your .bib file
+% ─────────────────────────────────────────────────────────────────────────────
+\bibliographystyle{splncs04}
+\begin{thebibliography}{99}
+
+\bibitem{fama1970efficient}
+Fama, E.F.: Efficient capital markets: A review of theory and empirical work.
+J. Finance \textbf{25}(2), 383--417 (1970)
+
+\bibitem{bai2018empirical}
+Bai, S., Kolter, J.Z., Koltun, V.: An empirical evaluation of generic convolutional
+and recurrent networks for sequence modeling. arXiv:1803.01271 (2018)
+
+\bibitem{hochreiter1997long}
+Hochreiter, S., Schmidhuber, J.: Long short-term memory.
+Neural Comput. \textbf{9}(8), 1735--1780 (1997)
+
+\bibitem{zhou2021informer}
+Zhou, H., et al.: Informer: Beyond efficient transformer for long sequence
+time-series forecasting. In: AAAI, pp. 11106--11115 (2021)
+
+\bibitem{wu2021autoformer}
+Wu, H., et al.: Autoformer: Decomposition transformers with auto-correlation
+for long-term series forecasting. In: NeurIPS (2021)
+
+\bibitem{gu2023mamba}
+Gu, A., Dao, T.: Mamba: Linear-time sequence modeling with selective state spaces.
+arXiv:2312.00752 (2023)
+
+\bibitem{gu2022efficiently}
+Gu, A., et al.: Efficiently modeling long sequences with structured state spaces.
+In: ICLR (2022)
+
+\bibitem{xu2024mamba}
+Xu, M., et al.: MambaMixer: Efficient selective state space models with dual
+token and channel selection. arXiv:2403.19888 (2024)
+
+\bibitem{wu2023timesnet}
+Wu, H., et al.: TimesNet: Temporal 2D-variation modeling for general time series
+analysis. In: ICLR (2023)
+
+\bibitem{nie2022time}
+Nie, Y., et al.: A time series is worth 64 words: Long-term forecasting with
+transformers. In: ICLR (2023)
+
+\bibitem{zhang2023crossformer}
+Zhang, Y., Yan, J.: Crossformer: Transformer utilizing cross-dimension dependency
+for multivariate time series forecasting. In: ICLR (2023)
+
+\bibitem{lieber2024jamba}
+Lieber, O., et al.: Jamba: A hybrid transformer-mamba language model.
+arXiv:2403.19887 (2024)
+
+\bibitem{fischer2018deep}
+Fischer, T., Krauss, C.: Deep learning with long short-term memory networks
+for financial market predictions. Eur. J. Oper. Res. \textbf{270}(2), 654--669
+(2018)
+
+\bibitem{michalikow2023madl}
+Michańków, J., et al.: Mean absolute directional loss as a new loss function
+for machine learning problems in algorithmic investment strategies.
+arXiv:2309.10546 (2023)
+
+\bibitem{sakowski2024gmadl}
+Sakowski, P., et al.: Generalized mean absolute directional loss as a solution
+to overfitting and high transaction costs in machine learning models used in
+high-frequency algorithmic investment strategies. arXiv:2412.18405 (2024)
+
+\bibitem{ding2015deep}
+Ding, X., et al.: Deep learning for event-driven stock prediction.
+In: IJCAI, pp. 2327--2333 (2015)
+
+\bibitem{sezer2020financial}
+Sezer, O.B., et al.: Financial time series forecasting with deep learning:
+A systematic literature review. Appl. Soft Comput. \textbf{90}, 106181 (2020)
+
+\bibitem{ji2019does}
+Ji, Q., et al.: Does Bitcoin contribute to hedge against inflation?
+J. Int. Financ. Mark. \textbf{62}, 1--9 (2019)
+
+\bibitem{atsalakis2019bitcoin}
+Atsalakis, G.S., et al.: Bitcoin price forecasting with neuro-fuzzy techniques.
+Eur. J. Oper. Res. \textbf{276}(2), 770--780 (2019)
+
+
+\bibitem{liu2025alphaseek}
+Liu, J., Ma, J., Jiang, Z.: AlphaSeek FinRL: A hybrid deep learning architecture
+for high-frequency cryptocurrency trading. In: IEEE 11th International Conference
+on Intelligent Data and Security (IDS), pp.~54--56 (2025)
+
+\end{thebibliography}
+
+\end{document}

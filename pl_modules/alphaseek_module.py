@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.alphaseek_hybrid import AlphaSeekBackbone
+from models.alphaseek_hybrid import HybridSSMTrader
 from models.losses import (
     DifferentiableSharpe,
     FocalLoss,
@@ -17,7 +17,7 @@ from models.losses import (
 from pl_modules.base_module import BaseModule
 
 
-class AlphaSeekSignalModule(BaseModule):
+class HybridSSMTraderModule(BaseModule):
     def __init__(
         self,
         # ── model ──────────────────────────────────────────────────────────
@@ -99,7 +99,7 @@ class AlphaSeekSignalModule(BaseModule):
         self.sharpe_loss_weight = sharpe_loss_weight
         self.turnover_penalty_weight = turnover_penalty_weight
 
-        self.model = AlphaSeekBackbone(
+        self.model = HybridSSMTrader(
             num_features=num_features,
             window_size=window_size,
             hidden_dim=hidden_dim,

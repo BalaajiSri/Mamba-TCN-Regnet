@@ -1,5 +1,5 @@
 # Group C: larger hidden dimension (128 vs default 64)
-target: pl_modules.alphaseek_module.AlphaSeekSignalModule
+target: pl_modules.alphaseek_module.HybridSSMTraderModule
 params:
   variant: "hybrid"
   num_features: 12

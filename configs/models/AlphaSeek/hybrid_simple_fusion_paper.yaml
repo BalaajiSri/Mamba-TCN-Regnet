@@ -1,4 +1,4 @@
-target: pl_modules.alphaseek_module.AlphaSeekSignalModule
+target: pl_modules.alphaseek_module.HybridSSMTraderModule
 params:
   variant: "hybrid_simple_fusion"
   num_features: 12

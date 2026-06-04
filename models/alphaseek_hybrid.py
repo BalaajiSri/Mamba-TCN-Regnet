@@ -73,7 +73,7 @@ class ParallelMambaEncoder(nn.Module):
         return self.out_norm(x + self.dropout(combined))
 
 
-class AlphaSeekBackbone(nn.Module):
+class HybridSSMTrader(nn.Module):
     def __init__(
         self,
         num_features: int,

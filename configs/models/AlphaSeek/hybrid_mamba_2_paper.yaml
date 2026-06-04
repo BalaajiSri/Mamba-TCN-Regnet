@@ -1,5 +1,5 @@
 # Group C: fewer Mamba branches (2 vs default 4); branch_dim = 32
-target: pl_modules.alphaseek_module.AlphaSeekSignalModule
+target: pl_modules.alphaseek_module.HybridSSMTraderModule
 params:
   variant: "hybrid"
   num_features: 12

@@ -1,5 +1,5 @@
 # Group C: shallow TCN (1 layer vs default 2)
-target: pl_modules.alphaseek_module.AlphaSeekSignalModule
+target: pl_modules.alphaseek_module.HybridSSMTraderModule
 params:
   variant: "hybrid"
   num_features: 12
