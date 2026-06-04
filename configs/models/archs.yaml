@@ -28,3 +28,8 @@ AlphaSeek_hybrid_no_tcn_paper: "AlphaSeek/hybrid_no_tcn_paper.yaml"
 AlphaSeek_hybrid_no_mamba_paper: "AlphaSeek/hybrid_no_mamba_paper.yaml"
 AlphaSeek_hybrid_no_attn_paper: "AlphaSeek/hybrid_no_attn_paper.yaml"
 AlphaSeek_hybrid_simple_fusion_paper: "AlphaSeek/hybrid_simple_fusion_paper.yaml"
+
+# Loss function experiments
+AlphaSeek_hybrid_gmadl_focal_paper: "AlphaSeek/hybrid_gmadl_focal_paper.yaml"
+AlphaSeek_hybrid_gmadl_ordinal_paper: "AlphaSeek/hybrid_gmadl_ordinal_paper.yaml"
+AlphaSeek_hybrid_gmadl_retce_paper: "AlphaSeek/hybrid_gmadl_retce_paper.yaml"

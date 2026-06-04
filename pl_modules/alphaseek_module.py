@@ -3,14 +3,24 @@ from __future__ import annotations
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from models.alphaseek_hybrid import AlphaSeekBackbone
+from models.losses import (
+    DifferentiableSharpe,
+    FocalLoss,
+    GMAdaptiveLoss,
+    OrdinalEMDLoss,
+    ReturnWeightedCE,
+    TurnoverPenalty,
+)
 from pl_modules.base_module import BaseModule
 
 
 class AlphaSeekSignalModule(BaseModule):
     def __init__(
         self,
+        # ── model ──────────────────────────────────────────────────────────
         num_features: int = 6,
         window_size: int = 30,
         hidden_dim: int = 64,
@@ -28,21 +38,38 @@ class AlphaSeekSignalModule(BaseModule):
         ffn_hidden_dim: int = 128,
         action_classes: int = 3,
         use_smoothing: bool = True,
+        # ── training targets ───────────────────────────────────────────────
         action_threshold: float = 0.002,
         transaction_cost: float = 0.0,
         min_action_return: float = 0.0,
+        # ── regression loss ────────────────────────────────────────────────
         regression_loss_weight: float = 1.0,
+        loss: str = "gmadl",            # gmadl | rmse | mse | mae | mape
+        gmadl_alpha: float = 1.0,       # magnitude exponent
+        gmadl_beta: float = 10.0,       # sigmoid sharpness
+        gmadl_tau: float = 0.0,         # transaction cost threshold (≥0)
+        # ── action loss ────────────────────────────────────────────────────
         action_loss_weight: float = 0.3,
+        action_loss: str = "focal",     # focal | ordinal | return_weighted | ce
+        focal_gamma: float = 2.0,       # for focal loss
+        # ── auxiliary losses ───────────────────────────────────────────────
+        sharpe_loss_weight: float = 0.1,    # 0 to disable
+        sharpe_temperature: float = 0.02,   # tanh temperature for diff. Sharpe
+        turnover_penalty_weight: float = 0.05,  # 0 to disable
+        # ── optimiser ──────────────────────────────────────────────────────
         lr: float = 0.0005,
         lr_step_size: int = 50,
         lr_gamma: float = 0.5,
         weight_decay: float = 0.0,
+        optimizer: str = "adam",
+        lr_scheduler: str = "step",
+        lr_cosine_T_max: int = 100,
+        lr_cosine_eta_min: float = 1e-6,
+        # ── misc ───────────────────────────────────────────────────────────
         logger_type: str | None = None,
         y_key: str = "Close",
-        optimizer: str = "adam",
         mode: str = "default",
-        target_mode: str = "price",
-        loss: str = "rmse",
+        target_mode: str = "log_return",
         close_index: int = 3,
         **kwargs,
     ):
@@ -57,6 +84,9 @@ class AlphaSeekSignalModule(BaseModule):
             optimizer=optimizer,
             mode=mode,
             loss=loss,
+            lr_scheduler=lr_scheduler,
+            lr_cosine_T_max=lr_cosine_T_max,
+            lr_cosine_eta_min=lr_cosine_eta_min,
         )
         self.variant = variant
         self.target_mode = target_mode
@@ -65,7 +95,9 @@ class AlphaSeekSignalModule(BaseModule):
         self.min_action_return = min_action_return
         self.regression_loss_weight = regression_loss_weight
         self.action_loss_weight = action_loss_weight
-        self.action_ce = nn.CrossEntropyLoss()
+        self.action_loss_type = action_loss
+        self.sharpe_loss_weight = sharpe_loss_weight
+        self.turnover_penalty_weight = turnover_penalty_weight
 
         self.model = AlphaSeekBackbone(
             num_features=num_features,
@@ -88,7 +120,26 @@ class AlphaSeekSignalModule(BaseModule):
             close_index=close_index,
         )
 
-        # Epoch-level accumulators (populated in *_step, consumed in on_*_epoch_end)
+        # ── regression loss ────────────────────────────────────────────────
+        self._gmadl = GMAdaptiveLoss(
+            alpha=gmadl_alpha, beta=gmadl_beta, tau=gmadl_tau
+        )
+
+        # ── action / classification loss ───────────────────────────────────
+        if action_loss == "focal":
+            self._action_loss_fn = FocalLoss(gamma=focal_gamma)
+        elif action_loss == "ordinal":
+            self._action_loss_fn = OrdinalEMDLoss(num_classes=action_classes)
+        elif action_loss == "return_weighted":
+            self._action_loss_fn = ReturnWeightedCE()
+        else:
+            self._action_loss_fn = nn.CrossEntropyLoss()
+
+        # ── auxiliary losses ───────────────────────────────────────────────
+        self._sharpe_loss = DifferentiableSharpe(temperature=sharpe_temperature) if sharpe_loss_weight > 0 else None
+        self._turnover_loss = TurnoverPenalty() if turnover_penalty_weight > 0 else None
+
+        # Epoch-level accumulators
         self._val_preds: list = []
         self._val_targets: list = []
         self._val_current_prices: list = []
@@ -136,14 +187,45 @@ class AlphaSeekSignalModule(BaseModule):
 
     # ─── loss helpers ─────────────────────────────────────────────────────────
 
-    def _resolve_regression_loss(self, mse, rmse, mae, mape):
+    def _compute_regression_loss(
+        self,
+        y_hat_denorm: torch.Tensor,
+        y_denorm: torch.Tensor,
+        y_old_denorm: torch.Tensor,
+        prediction: torch.Tensor,
+    ) -> torch.Tensor:
+        """Route to the appropriate regression loss.
+
+        GMADL and Sharpe operate on log-returns; the others operate on prices.
+        We compute both surfaces and select at config time.
+        """
+        # Log-return surface (used by GMADL / Sharpe)
+        pred_logret = self._regression_target(y_hat_denorm, y_old_denorm)
+        true_logret = self._regression_target(y_denorm, y_old_denorm)
+
+        if self.loss == "gmadl":
+            return self._gmadl(pred_logret, true_logret)
+
+        # Fall back to price-space losses
+        mse = self.mse(y_hat_denorm, y_denorm)
         if self.loss == "mse":
             return mse
         if self.loss == "mae":
-            return mae
+            return self.l1(y_hat_denorm, y_denorm)
         if self.loss == "mape":
-            return mape
-        return rmse
+            return self.mape(y_hat_denorm, y_denorm)
+        # default: rmse
+        return torch.sqrt(mse)
+
+    def _compute_action_loss(
+        self,
+        action_logits: torch.Tensor,
+        action_targets: torch.Tensor,
+        true_returns: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.action_loss_type == "return_weighted":
+            return self._action_loss_fn(action_logits, action_targets, true_returns)
+        return self._action_loss_fn(action_logits, action_targets)
 
     def _make_action_targets(self, current_price: torch.Tensor, next_price: torch.Tensor) -> torch.Tensor:
         returns = (next_price - current_price) / current_price.clamp_min(1e-6)
@@ -173,7 +255,6 @@ class AlphaSeekSignalModule(BaseModule):
         return self.logger_type == "wandb"
 
     def _wandb_log(self, payload: dict, commit: bool = False) -> None:
-        """Log arbitrary dict to WandB experiment without going through Lightning's log()."""
         if not self._is_wandb():
             return
         try:
@@ -198,44 +279,60 @@ class AlphaSeekSignalModule(BaseModule):
         y_denorm, y_hat_denorm = self.denormalize(y, y_hat)
         y_old_denorm = self.denormalize_value(y_old)
 
+        # ── standard price metrics (always logged) ──────────────────────────
         mse = self.mse(y_hat_denorm, y_denorm)
         rmse = torch.sqrt(mse)
         mape = self.mape(y_hat_denorm, y_denorm)
         mae = self.l1(y_hat_denorm, y_denorm)
 
+        # ── action targets + action loss ────────────────────────────────────
         action_targets = self._make_action_targets(y_old_denorm.reshape(-1), y_denorm.reshape(-1))
-        action_loss = self.action_ce(action_logits, action_targets)
+        true_returns = (y_denorm.reshape(-1) - y_old_denorm.reshape(-1)) / y_old_denorm.reshape(-1).clamp_min(1e-6)
+
+        action_loss = self._compute_action_loss(action_logits, action_targets, true_returns)
         action_acc = (action_logits.argmax(dim=-1) == action_targets).float().mean()
         self._log_action_distribution(action_targets, stage)
 
-        regression_target = self._regression_target(y_denorm, y_old_denorm)
-        prediction_target = (
-            prediction
-            if self.normalization_coeffs is None
-            else self._regression_target(y_hat_denorm, y_old_denorm)
+        # ── regression loss ─────────────────────────────────────────────────
+        regression_loss = self._compute_regression_loss(
+            y_hat_denorm, y_denorm, y_old_denorm, prediction
         )
-        regression_mse = self.mse(prediction_target, regression_target)
-        regression_rmse = torch.sqrt(regression_mse)
-        regression_mae = self.l1(prediction_target, regression_target)
-        regression_mape = (
-            self.mape(prediction_target, regression_target)
-            if self.target_mode == "price"
-            else regression_mae
-        )
-        regression_loss = self._resolve_regression_loss(
-            regression_mse, regression_rmse, regression_mae, regression_mape
-        )
-        total_loss = self.regression_loss_weight * regression_loss + self.action_loss_weight * action_loss
 
-        self.log(f"{stage}/loss",        total_loss.detach(),  batch_size=self.batch_size, sync_dist=True, prog_bar=(stage != "test"))
-        self.log(f"{stage}/mse",         mse.detach(),          batch_size=self.batch_size, sync_dist=True, prog_bar=False)
-        self.log(f"{stage}/rmse",        rmse.detach(),         batch_size=self.batch_size, sync_dist=True, prog_bar=True)
-        self.log(f"{stage}/mape",        mape.detach(),         batch_size=self.batch_size, sync_dist=True, prog_bar=False)
-        self.log(f"{stage}/mae",         mae.detach(),          batch_size=self.batch_size, sync_dist=True, prog_bar=False)
-        self.log(f"{stage}/action_loss", action_loss.detach(),  batch_size=self.batch_size, sync_dist=True, prog_bar=False)
-        self.log(f"{stage}/action_acc",  action_acc.detach(),   batch_size=self.batch_size, sync_dist=True, prog_bar=True)
+        # ── auxiliary: differentiable Sharpe ───────────────────────────────
+        sharpe_loss = torch.zeros(1, device=x.device).squeeze()
+        if self._sharpe_loss is not None and self.sharpe_loss_weight > 0:
+            pred_logret = self._regression_target(y_hat_denorm, y_old_denorm)
+            true_logret = self._regression_target(y_denorm, y_old_denorm)
+            sharpe_loss = self._sharpe_loss(pred_logret, true_logret)
 
-        # Accumulate for epoch-level metrics (val and test only)
+        # ── auxiliary: turnover penalty ─────────────────────────────────────
+        turnover_loss = torch.zeros(1, device=x.device).squeeze()
+        if self._turnover_loss is not None and self.turnover_penalty_weight > 0:
+            turnover_loss = self._turnover_loss(action_logits)
+
+        # ── total loss ──────────────────────────────────────────────────────
+        total_loss = (
+            self.regression_loss_weight * regression_loss
+            + self.action_loss_weight * action_loss
+            + self.sharpe_loss_weight * sharpe_loss
+            + self.turnover_penalty_weight * turnover_loss
+        )
+
+        # ── logging ─────────────────────────────────────────────────────────
+        self.log(f"{stage}/loss",             total_loss.detach(),     batch_size=self.batch_size, sync_dist=True, prog_bar=(stage != "test"))
+        self.log(f"{stage}/regression_loss",  regression_loss.detach(),batch_size=self.batch_size, sync_dist=True, prog_bar=False)
+        self.log(f"{stage}/mse",              mse.detach(),            batch_size=self.batch_size, sync_dist=True, prog_bar=False)
+        self.log(f"{stage}/rmse",             rmse.detach(),           batch_size=self.batch_size, sync_dist=True, prog_bar=True)
+        self.log(f"{stage}/mape",             mape.detach(),           batch_size=self.batch_size, sync_dist=True, prog_bar=False)
+        self.log(f"{stage}/mae",              mae.detach(),            batch_size=self.batch_size, sync_dist=True, prog_bar=False)
+        self.log(f"{stage}/action_loss",      action_loss.detach(),    batch_size=self.batch_size, sync_dist=True, prog_bar=False)
+        self.log(f"{stage}/action_acc",       action_acc.detach(),     batch_size=self.batch_size, sync_dist=True, prog_bar=True)
+        if self.sharpe_loss_weight > 0:
+            self.log(f"{stage}/sharpe_loss",  sharpe_loss.detach(),    batch_size=self.batch_size, sync_dist=True, prog_bar=False)
+        if self.turnover_penalty_weight > 0:
+            self.log(f"{stage}/turnover",     turnover_loss.detach(),  batch_size=self.batch_size, sync_dist=True, prog_bar=False)
+
+        # ── accumulate for epoch-level metrics ──────────────────────────────
         if stage in ("val", "test"):
             store_preds  = getattr(self, f"_{stage}_preds")
             store_tgts   = getattr(self, f"_{stage}_targets")
@@ -253,27 +350,23 @@ class AlphaSeekSignalModule(BaseModule):
     # ─── epoch hooks ──────────────────────────────────────────────────────────
 
     def on_train_epoch_end(self) -> None:
-        """Log learning rate and gradient norm once per training epoch."""
         try:
             opt = self.optimizers()
             lr = opt.param_groups[0]["lr"]
             self.log("train/lr", lr, prog_bar=False)
         except Exception:
             pass
-
-        # Gradient norm (total L2 over all parameters)
         try:
-            total_norm = 0.0
-            for p in self.parameters():
-                if p.grad is not None:
-                    total_norm += p.grad.data.norm(2).item() ** 2
-            total_norm = total_norm ** 0.5
+            total_norm = sum(
+                p.grad.data.norm(2).item() ** 2
+                for p in self.parameters()
+                if p.grad is not None
+            ) ** 0.5
             self.log("train/grad_norm", total_norm, prog_bar=False)
         except Exception:
             pass
 
     def _epoch_end_metrics(self, stage: str) -> None:
-        """Compute and log IC, per-class F1, calibration at end of val/test epoch."""
         from utils.metrics import (
             ic_metrics,
             multiclass_calibration,
@@ -286,7 +379,6 @@ class AlphaSeekSignalModule(BaseModule):
         logits  = torch.cat(getattr(self, f"_{stage}_action_logits")).numpy()
         atgts   = torch.cat(getattr(self, f"_{stage}_action_targets")).numpy()
 
-        # Clear accumulators
         getattr(self, f"_{stage}_preds").clear()
         getattr(self, f"_{stage}_targets").clear()
         getattr(self, f"_{stage}_current_prices").clear()
@@ -301,19 +393,17 @@ class AlphaSeekSignalModule(BaseModule):
         pred_actions  = np.argmax(logits, axis=1)
         probs         = torch.from_numpy(logits).softmax(dim=-1).numpy()
 
-        # ── IC / ICIR ────────────────────────────────────────────────────────
         try:
             ic = ic_metrics(pred_returns, true_returns)
-            self.log(f"{stage}/ic",   ic["ic"],   prog_bar=False, sync_dist=True)
-            self.log(f"{stage}/icir", ic["icir"],  prog_bar=False, sync_dist=True)
-            self.log(f"{stage}/rolling_ic_mean",    ic["rolling_ic_mean"],          prog_bar=False, sync_dist=True)
+            self.log(f"{stage}/ic",                  ic["ic"],                       prog_bar=False, sync_dist=True)
+            self.log(f"{stage}/icir",                ic["icir"],                     prog_bar=False, sync_dist=True)
+            self.log(f"{stage}/rolling_ic_mean",     ic["rolling_ic_mean"],          prog_bar=False, sync_dist=True)
             self.log(f"{stage}/rolling_ic_pos_frac", ic["rolling_ic_positive_frac"], prog_bar=False, sync_dist=True)
             if self._is_wandb():
                 self._wandb_log({f"{stage}/ic_detail": ic})
         except Exception:
             pass
 
-        # ── per-class action metrics ─────────────────────────────────────────
         try:
             cls = per_class_metrics(atgts, pred_actions)
             for key in ("f1_macro", "f1_weighted", "f1_sell", "f1_hold", "f1_buy",
@@ -321,7 +411,6 @@ class AlphaSeekSignalModule(BaseModule):
                         "recall_sell", "recall_hold", "recall_buy"):
                 if key in cls:
                     self.log(f"{stage}/{key}", cls[key], prog_bar=False, sync_dist=True)
-
             if self._is_wandb():
                 import wandb
                 self._wandb_log({
@@ -335,7 +424,6 @@ class AlphaSeekSignalModule(BaseModule):
         except Exception:
             pass
 
-        # ── calibration ──────────────────────────────────────────────────────
         try:
             cal = multiclass_calibration(probs, atgts)
             self.log(f"{stage}/ece_mean", cal["ece_mean"], prog_bar=False, sync_dist=True)
@@ -348,11 +436,9 @@ class AlphaSeekSignalModule(BaseModule):
         except Exception:
             pass
 
-        # ── WandB reliability diagram ─────────────────────────────────────────
         if self._is_wandb():
             try:
                 import wandb
-                # Scatter: predicted return vs actual return (IC diagnostic)
                 n_scatter = min(500, len(pred_returns))
                 idx = np.random.choice(len(pred_returns), n_scatter, replace=False)
                 scatter_data = [[float(pred_returns[i]), float(true_returns[i])] for i in idx]
