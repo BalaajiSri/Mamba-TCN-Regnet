@@ -133,6 +133,24 @@ def get_args():
         default=False,
         help="Upload best/last checkpoints to W&B (can be slow for large models).",
     )
+    # Negative-control experiments (Group E)
+    parser.add_argument(
+        "--negcontrol_mode",
+        type=str,
+        default=None,
+        choices=["shuffled_labels", "lag_mismatch"],
+        help=(
+            "Corrupt training targets for negative-control validation. "
+            "'shuffled_labels' randomly permutes targets; "
+            "'lag_mismatch' shifts targets forward by one step."
+        ),
+    )
+    parser.add_argument(
+        "--negcontrol_seed",
+        type=int,
+        default=0,
+        help="Seed for the negcontrol permutation (shuffled_labels mode).",
+    )
     return parser.parse_args()
 
 
@@ -260,6 +278,8 @@ if __name__ == "__main__":
         num_workers=args.num_workers,
         normalize=normalize,
         window_size=model.window_size,
+        negcontrol_mode=getattr(args, "negcontrol_mode", None),
+        negcontrol_seed=getattr(args, "negcontrol_seed", 0),
     )
 
     callbacks = []

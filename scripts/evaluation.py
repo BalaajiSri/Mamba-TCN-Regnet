@@ -21,6 +21,18 @@ from utils.runtime import pl, resolve_checkpoint_path, resolve_inference_device
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
+# Paper metrics library
+sys.path.insert(0, os.path.dirname(pathlib.Path(__file__).parent.absolute()))
+from utils.metrics import (
+    ic_metrics,
+    multiclass_calibration,
+    per_class_metrics,
+    buy_and_hold_metrics,
+    persistence_metrics,
+    sharpe_ratio,
+    max_drawdown,
+)
+
 sns.set_theme(style="whitegrid", context="paper", font_scale=3)
 
 ROOT = io_tools.get_root(__file__, num_returns=2)
@@ -88,6 +100,25 @@ def regression_metrics(targets, preds, current_prices=None):
         metrics["directional_accuracy"] = float(
             np.mean(np.sign(targets - current_prices) == np.sign(preds - current_prices))
         )
+        # Persistence baseline
+        persistence_errors = current_prices - targets
+        metrics["persistence_rmse"] = float(np.sqrt(np.mean(persistence_errors ** 2)))
+        metrics["persistence_mae"] = float(np.mean(np.abs(persistence_errors)))
+        metrics["rmse_vs_persistence"] = metrics["rmse"] - metrics["persistence_rmse"]
+        # IC / ICIR (return-space)
+        try:
+            pred_returns  = (preds  - current_prices) / np.maximum(np.abs(current_prices), 1e-8)
+            true_returns  = (targets - current_prices) / np.maximum(np.abs(current_prices), 1e-8)
+            ic = ic_metrics(pred_returns, true_returns)
+            metrics.update({f"ic_{k}": v for k, v in ic.items()})
+        except Exception:
+            pass
+        # Buy-and-hold baseline (requires price series, approximated from current_prices)
+        try:
+            bah = buy_and_hold_metrics(np.concatenate([current_prices[:1], targets]))
+            metrics.update(bah)
+        except Exception:
+            pass
     return metrics
 
 
@@ -113,6 +144,11 @@ def action_metrics(targets, preds, current_prices, threshold, transaction_cost=0
     pred_actions = action_labels(current_prices, preds, threshold, transaction_cost)
     counts = np.bincount(pred_actions, minlength=3).astype(np.float64)
     fractions = counts / max(float(counts.sum()), 1.0)
+    # Per-class F1 / precision / recall
+    try:
+        cls_m = per_class_metrics(true_actions, pred_actions)
+    except Exception:
+        cls_m = {}
     return {
         "threshold": float(threshold),
         "transaction_cost": float(transaction_cost),
@@ -121,6 +157,7 @@ def action_metrics(targets, preds, current_prices, threshold, transaction_cost=0
         "pred_sell_frac": float(fractions[0]),
         "pred_hold_frac": float(fractions[1]),
         "pred_buy_frac": float(fractions[2]),
+        **{f"cls_{k}": v for k, v in cls_m.items()},
     }
 
 
@@ -407,6 +444,37 @@ if __name__ == "__main__":
     ax = plt.gca()
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, pos: "{:,.0f}K".format(x / 1000)))
     plt.savefig(plot_path, dpi=300, bbox_inches="tight")
+    # ── Calibration per split ──────────────────────────────────────────────
+    for split_key, output in split_outputs.items():
+        if output is None:
+            continue
+        try:
+            action_logits_np = np.array(output.get("action_logits", []), dtype=np.float64)
+            action_targets_np = output.get("action_targets_np")
+            if action_logits_np.ndim == 2 and action_targets_np is not None:
+                import torch as _t
+                probs_np = _t.from_numpy(action_logits_np).softmax(dim=-1).numpy()
+                cal = multiclass_calibration(probs_np, np.array(action_targets_np, dtype=np.int64))
+                if split_key in metrics_json["splits"]:
+                    metrics_json["splits"][split_key]["calibration"] = cal
+        except Exception:
+            pass
+
     with open(results_dir / "metrics.json", "w", encoding="utf-8") as handle:
         json.dump(metrics_json, handle, indent=2, sort_keys=True)
     metrics_file.close()
+
+    # ── WandB: upload metrics.json as artifact ──────────────────────────────
+    try:
+        import wandb as _wandb
+        if _wandb.run is not None:
+            _wandb.log({"eval/metrics_summary": metrics_json.get("splits", {})})
+            art = _wandb.Artifact(
+                name=f"eval-{_wandb.run.name or _wandb.run.id}",
+                type="evaluation",
+                description="Evaluation metrics JSON",
+            )
+            art.add_file(str(results_dir / "metrics.json"))
+            _wandb.log_artifact(art)
+    except Exception:
+        pass

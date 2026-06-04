@@ -207,3 +207,47 @@ class DataConverter:
     @staticmethod
     def convert_timestamp(timestamp):
         return datetime.fromtimestamp(timestamp)
+
+
+class NegControlDataset(torch.utils.data.Dataset):
+    """Wraps CMambaDataset to corrupt targets for negative-control experiments.
+
+    shuffled_labels  – features from sample i paired with targets from perm[i].
+                       Expected result: direction accuracy ≈ 33 % (3-class chance).
+    lag_mismatch     – features from sample i paired with targets from sample i+1.
+                       Detects look-ahead leakage; well-built models should collapse.
+
+    Only the training split is corrupted.  Val/test loaders use the original dataset.
+    """
+
+    TARGET_KEYS = ("Close", "Close_old")
+
+    def __init__(
+        self,
+        base_dataset: CMambaDataset,
+        mode: str,
+        seed: int = 0,
+    ) -> None:
+        if mode not in ("shuffled_labels", "lag_mismatch"):
+            raise ValueError(f"Unknown negcontrol mode '{mode}'. Choose 'shuffled_labels' or 'lag_mismatch'.")
+        self.base = base_dataset
+        self.mode = mode
+        n = len(base_dataset)
+        rng = torch.Generator().manual_seed(seed)
+        self._perm = torch.randperm(n, generator=rng).tolist()
+
+    def __len__(self) -> int:
+        if self.mode == "lag_mismatch":
+            return max(0, len(self.base) - 1)
+        return len(self.base)
+
+    def __getitem__(self, i: int):
+        sample = dict(self.base[i])
+        if self.mode == "shuffled_labels":
+            target_sample = self.base[self._perm[i]]
+        else:  # lag_mismatch: predict one step further ahead than intended
+            target_sample = self.base[i + 1]
+        for key in self.TARGET_KEYS:
+            if key in target_sample:
+                sample[key] = target_sample[key]
+        return sample

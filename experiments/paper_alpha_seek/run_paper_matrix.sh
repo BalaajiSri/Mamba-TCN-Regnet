@@ -13,7 +13,7 @@ CONFIGS=(
   paper_hybrid_no_features_1d
   paper_hybrid_no_action_1d
 )
-SEEDS=(23 29 37)
+SEEDS=(23 29 37 41 53)
 
 : "${CONDA_ENV:?Set CONDA_ENV, e.g. CONDA_ENV=cryptomamba}"
 

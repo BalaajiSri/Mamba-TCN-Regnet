@@ -145,12 +145,37 @@ class AlphaSeekBackbone(nn.Module):
         long_context: torch.Tensor,
         global_context: torch.Tensor,
     ) -> torch.Tensor:
+        # ── single-branch baselines ──────────────────────────────────────────
         if self.variant == "tcn":
             return self.output_norm(base + local_context + self.ffn(local_context))
         if self.variant == "mamba":
             return self.output_norm(base + long_context + self.ffn(long_context))
         if self.variant == "attention":
             return self.output_norm(base + global_context + self.ffn(global_context))
+
+        # ── two-branch ablations (hybrid minus one component) ────────────────
+        # Each ablation uses a simple mean of the remaining branches so that
+        # capacity differences are isolated to the removed component only.
+        if self.variant == "hybrid_no_tcn":
+            # Mamba + attention, no local TCN branch
+            ctx = (long_context + global_context) * 0.5
+            return self.output_norm(base + ctx + self.ffn(ctx))
+        if self.variant == "hybrid_no_mamba":
+            # TCN + attention, no long-range Mamba branch
+            ctx = (local_context + global_context) * 0.5
+            return self.output_norm(base + ctx + self.ffn(ctx))
+        if self.variant == "hybrid_no_attn":
+            # TCN + Mamba, no global attention branch
+            ctx = (local_context + long_context) * 0.5
+            return self.output_norm(base + ctx + self.ffn(ctx))
+
+        # ── full hybrid with simple (unweighted) fusion ──────────────────────
+        if self.variant == "hybrid_simple_fusion":
+            # All three branches, mean-pooled – no gated fusion
+            ctx = (local_context + long_context + global_context) / 3.0
+            return self.output_norm(base + ctx + self.ffn(ctx))
+
+        # ── full hybrid with gated fusion (default) ──────────────────────────
         fused = self.fusion(local_context, long_context, global_context, residual=base)
         return self.output_norm(fused + self.ffn(fused))
 

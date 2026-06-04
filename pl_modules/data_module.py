@@ -3,7 +3,7 @@ import numpy as np
 from copy import copy
 from pathlib import Path
 from argparse import ArgumentParser
-from data_utils.dataset import CMambaDataset, DataConverter
+from data_utils.dataset import CMambaDataset, DataConverter, NegControlDataset
 
 try:
     import lightning.pytorch as pl
@@ -34,16 +34,18 @@ def worker_init_fn(worker_id):
 class CMambaDataModule(pl.LightningDataModule):
 
     def __init__(
-        self, 
-        data_config, 
-        train_transform, 
-        val_transform, 
-        test_transform, 
-        batch_size, 
+        self,
+        data_config,
+        train_transform,
+        val_transform,
+        test_transform,
+        batch_size,
         distributed_sampler,
         num_workers=4,
         normalize=False,
         window_size=14,
+        negcontrol_mode=None,
+        negcontrol_seed=0,
     ):
 
         super().__init__()
@@ -57,12 +59,14 @@ class CMambaDataModule(pl.LightningDataModule):
         self.distributed_sampler = distributed_sampler
         self.window_size = window_size
         self.factors = None
+        self.negcontrol_mode = negcontrol_mode
+        self.negcontrol_seed = negcontrol_seed
 
         self.converter = DataConverter(data_config)
         train, val, test = self.converter.get_data()
         self.data_dict = {
             'train': train,
-            'val': val,    
+            'val': val,
             'test': test,
         }
 
@@ -96,8 +100,8 @@ class CMambaDataModule(pl.LightningDataModule):
         self,
         data_split,
         data_transform,
-        batch_size=None
-    ) :
+        batch_size=None,
+    ):
         dataset = CMambaDataset(
             data=self.data_dict.get(data_split),
             split=data_split,
@@ -105,16 +109,26 @@ class CMambaDataModule(pl.LightningDataModule):
             transform=data_transform,
         )
 
+        # Wrap with NegControlDataset only on the training split.
+        # Val and test always use clean targets so metrics remain interpretable.
+        if data_split == "train" and self.negcontrol_mode is not None:
+            dataset = NegControlDataset(
+                base_dataset=dataset,
+                mode=self.negcontrol_mode,
+                seed=self.negcontrol_seed,
+            )
+            print(f"[NegControl] Training targets corrupted via mode='{self.negcontrol_mode}' (seed={self.negcontrol_seed})")
+
         batch_size = self.batch_size if batch_size is None else batch_size
         sampler = torch.utils.data.DistributedSampler(dataset) if self.distributed_sampler else None
-        
+
         dataloader = torch.utils.data.DataLoader(
             dataset=dataset,
             batch_size=batch_size,
             num_workers=self.num_workers,
             worker_init_fn=worker_init_fn,
             sampler=sampler,
-            drop_last=False
+            drop_last=False,
         )
         return dataloader
 

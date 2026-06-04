@@ -11,3 +11,20 @@ AlphaSeek_attention_paper: "Baselines/attention_paper.yaml"
 AlphaSeek_hybrid_logret_cost_paper: "AlphaSeek/hybrid_logret_cost_paper.yaml"
 AlphaSeek_tcn_logret_cost_paper: "Baselines/tcn_logret_cost_paper.yaml"
 AlphaSeek_mamba_logret_cost_paper: "Baselines/mamba_logret_cost_paper.yaml"
+
+# Ablation: no adaptive smoothing (Group B)
+AlphaSeek_hybrid_no_smooth_paper: "AlphaSeek/hybrid_no_smooth_paper.yaml"
+
+# Complexity variants (Group C)
+AlphaSeek_hybrid_small_paper: "AlphaSeek/hybrid_small_paper.yaml"
+AlphaSeek_hybrid_large_paper: "AlphaSeek/hybrid_large_paper.yaml"
+AlphaSeek_hybrid_tcn_deep_paper: "AlphaSeek/hybrid_tcn_deep_paper.yaml"
+AlphaSeek_hybrid_tcn_shallow_paper: "AlphaSeek/hybrid_tcn_shallow_paper.yaml"
+AlphaSeek_hybrid_mamba_2_paper: "AlphaSeek/hybrid_mamba_2_paper.yaml"
+AlphaSeek_hybrid_mamba_8_paper: "AlphaSeek/hybrid_mamba_8_paper.yaml"
+
+# Branch-level ablations (Group B)
+AlphaSeek_hybrid_no_tcn_paper: "AlphaSeek/hybrid_no_tcn_paper.yaml"
+AlphaSeek_hybrid_no_mamba_paper: "AlphaSeek/hybrid_no_mamba_paper.yaml"
+AlphaSeek_hybrid_no_attn_paper: "AlphaSeek/hybrid_no_attn_paper.yaml"
+AlphaSeek_hybrid_simple_fusion_paper: "AlphaSeek/hybrid_simple_fusion_paper.yaml"
