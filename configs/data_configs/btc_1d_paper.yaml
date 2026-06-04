@@ -1,0 +1,11 @@
+jumps: 86400
+start_date: "2018-09-17"
+end_date: "2026-03-13"
+root: "./data"
+date_format: "%Y-%m-%d"
+data_path: "./data/btc_daily_full.csv"
+split_name: "paper_v1"
+train_interval: ["2018-09-17", "2024-01-01"]
+val_interval: ["2024-01-01", "2025-01-01"]
+test_interval: ["2025-01-01", "2026-03-13"]
+additional_features: []

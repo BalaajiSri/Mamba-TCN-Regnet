@@ -1,0 +1,13 @@
+AlphaSeek_hybrid_v1: "AlphaSeek/hybrid_v1.yaml"
+AlphaSeek_tcn_v1: "Baselines/tcn_v1.yaml"
+AlphaSeek_mamba_v1: "Baselines/mamba_v1.yaml"
+AlphaSeek_attention_v1: "Baselines/attention_v1.yaml"
+
+AlphaSeek_hybrid_paper: "AlphaSeek/hybrid_paper.yaml"
+AlphaSeek_tcn_paper: "Baselines/tcn_paper.yaml"
+AlphaSeek_mamba_paper: "Baselines/mamba_paper.yaml"
+AlphaSeek_attention_paper: "Baselines/attention_paper.yaml"
+
+AlphaSeek_hybrid_logret_cost_paper: "AlphaSeek/hybrid_logret_cost_paper.yaml"
+AlphaSeek_tcn_logret_cost_paper: "Baselines/tcn_logret_cost_paper.yaml"
+AlphaSeek_mamba_logret_cost_paper: "Baselines/mamba_logret_cost_paper.yaml"
